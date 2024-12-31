@@ -22,31 +22,47 @@ np.set_printoptions(suppress=True)
 # Mobile inverted bottleneck
 class MBConvBlock:
     def __init__(self, kernel_size, strides, expand_ratio, input_filters, output_filters, se_ratio, has_se, track_running_stats=True):
-        oup = expand_ratio * input_filters
+        oup = expand_ratio * input_filters # Number of channels in the expanded space
+
+        # Expansion convolution is applied only if block expands the channels
         if expand_ratio != 1:
+            # Pointwise convolution (1x1 kernel) for channel expansion
             self._expand_conv = Tensor.glorot_uniform(oup, input_filters, 1, 1)
+            # Batch normalization for expanded output
             self._bn0 = BatchNorm2d(oup, track_running_stats = track_running_stats)
         else:
+            # No expansion needed
             self._expand_conv = None
         
         self.strides = strides
         if strides == (2,2):
+           # Calulating the padding for stride 2, ensures spatial dimensions are correctly handled after downsampling
            self.pad = [(kernel_size-1)//2-1, (kernel_size-1)//2]*2
         else:
+            # Regular padding for stride 1
             self.pad = [(kernel_size-1) // 2]*4
         
+        # Depth wise conv initialization
         self._depthwise_conv = Tensor.glorot_uniform(oup, 1, kernel_size, kernel_size)
+        # Batch Normalization after depthwise convolution
         self._bn1 = BatchNorm2d(oup, track_running_stats=track_running_stats)
 
         self.has_se = has_se
         if self.has_se:
+            # Computes the reduced number of channels in SE_block
             num_squeezed_channels = max(1, int(input_filters * se_ratio))
+            # Pointwise convolution for channel reduction
             self._se_reduce = Tensor.glorot_uniform(num_squeezed_channels, oup, 1, 1)
+            # Initializes biases for reduced convolution
             self._se_reduce_bias = Tensor.zeros(num_squeezed_channels)
+            # Pointwise convolution for channel expansion
             self._se_expand = Tensor.glorot_uniform(oup, num_squeezed_channels, 1, 1)
+            # Intitializes biases for expanded convolution
             self._se_expand_bias = Tensor.zeros(oup)
         
+        # Pointwise convolution to project channels back to the desired output
         self._project_conv = Tensor.glorot_uniform(output_filters, oup, 1, 1)
+        # Batch normalization
         self._bn2 = BatchNorm2d(output_filters, track_running_stats=track_running_stats)
     
     def __call__(self, inputs):
@@ -71,6 +87,8 @@ class MBConvBlock:
 class EfficientNet:
     def __init__(self, number=0, classes=1000, has_se=True, track_running_stats=True,  input_channels=3, has_fc_output=True):
         self.number = number
+        
+        # Scaling parameters for each EfficeintNet version, width multiplier sacels teh number of channles, depth multiplier scales the number of layers
         global_params = [
         # width, depth
         (1.0, 1.0), # b0
@@ -85,6 +103,7 @@ class EfficientNet:
         (4.3, 5.3), # l2
         ][max(number,0)]
 
+        # Scales number of filters based on width multiplier
         def round_filters(filters):
             multiplier = global_params[0]
             divisor = 8
@@ -110,6 +129,7 @@ class EfficientNet:
         [1, 3, (1,1), 6, 192, 320, 0.25],
         ]
 
+        # Custom COnfigurations
         if self.number == -1:
             blocks_args = [
                 [1, 3, (2,2), 1, 32, 40, 0.25],
@@ -122,6 +142,7 @@ class EfficientNet:
                 [1, 9, (8,8), 1, 32, 320, 0.25],
             ]
         
+        # Creating MBConv Blocks
         self._blocks = []
         for num_repeats, kernel_size, strides, expand_ratio, input_filters, output_filters, se_ratio in blocks_args:
             input_filters, output_filters = round_filters(input_filters), round_filters(output_filters)
@@ -130,7 +151,9 @@ class EfficientNet:
                 input_filters = output_filters
                 strides = (1,1)
             
+            # Input channel for the head is set to the final output of the last MBCOnv block
             in_channels = round_filters(320)
+            # Scales the output channles for the final convolutional layer
             out_channels = round_filters(1280)
             self._conv_head = Tensor.glorot_uniform(out_channels, in_channels, 1, 1)
             self._bn1 = BatchNorm2d(out_channels, track_running_stats =track_running_stats)
