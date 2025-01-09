@@ -10,6 +10,8 @@ import librosa
 import requests
 
 
+from TINYGRAD.tg_git.models.utils.py import fetch, getenv
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, n_state, n_head, kv_caching: Literal['cross', 'self']=None, max_self_attn_cache_len=None):
         super().__init__()
@@ -185,74 +187,32 @@ LANGUAGES = {
   "as": "assamese", "tt": "tatar", "haw": "hawaiian", "ln": "lingala", "ha": "hausa", "ba": "bashkir", "jw": "javanese", "su": "sundanese",
 }
 
-# def get_encoding(encoding_name):
-#   f = requests.get("https://raw.githubusercontent.com/openai/whisper/main/whisper/assets/{encoding_name}.tiktoken").text.splitlines()
-#   ranks = {base64.b64decode(token): int(rank) for token, rank in (line.split() for line in f if line)}
-#   n_vocab = len(ranks)
-#   specials = [
-#     "<|endoftext|>",
-#     "<|startoftranscript|>",
-#     *[f"<|{lang}|>" for lang in LANGUAGES.keys()],
-#     "<|translate|>",
-#     "<|transcribe|>",
-#     "<|startoflm|>",
-#     "<|startofprev|>",
-#     "<|nospeech|>",
-#     "<|notimestamps|>",
-#     *[f"<|{i * 0.02:.2f}|>" for i in range(1501)],
-#   ]
-#   special_tokens = dict(zip(specials, itertools.count(n_vocab)))
-#   n_vocab += len(specials)
-#   import tiktoken
-#   return tiktoken.Encoding(
-#     name=encoding_name,
-#     explicit_n_vocab=n_vocab,
-#     pat_str=r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""",
-#     mergeable_ranks=ranks,
-#     special_tokens=special_tokens)
-
 def get_encoding(encoding_name):
-    response = requests.get(f"https://raw.githubusercontent.com/openai/whisper/main/whisper/assets/{encoding_name}.tiktoken")
-    response.raise_for_status()  # Ensure the request was successful
-    f = response.text.splitlines()
+  f = requests.get("https://raw.githubusercontent.com/openai/whisper/main/whisper/assets/{encoding_name}.tiktoken").text.splitlines()
+  ranks = {base64.b64decode(token): int(rank) for token, rank in (line.split() for line in f if line)}
+  n_vocab = len(ranks)
+  specials = [
+    "<|endoftext|>",
+    "<|startoftranscript|>",
+    *[f"<|{lang}|>" for lang in LANGUAGES.keys()],
+    "<|translate|>",
+    "<|transcribe|>",
+    "<|startoflm|>",
+    "<|startofprev|>",
+    "<|nospeech|>",
+    "<|notimestamps|>",
+    *[f"<|{i * 0.02:.2f}|>" for i in range(1501)],
+  ]
+  special_tokens = dict(zip(specials, itertools.count(n_vocab)))
+  n_vocab += len(specials)
+  import tiktoken
+  return tiktoken.Encoding(
+    name=encoding_name,
+    explicit_n_vocab=n_vocab,
+    pat_str=r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""",
+    mergeable_ranks=ranks,
+    special_tokens=special_tokens)
 
-    ranks = {}
-    for line in f:
-        parts = line.split()
-        if len(parts) == 2:  # Ensure exactly two parts
-            try:
-                token = base64.b64decode(parts[0])
-                rank = int(parts[1])
-                ranks[token] = rank
-            except (ValueError, TypeError) as e:
-                print(f"Skipping invalid line: {line} - Error: {e}")
-        else:
-            print(f"Skipping invalid line: {line}")
-
-    n_vocab = len(ranks)
-    specials = [
-        "<|endoftext|>",
-        "<|startoftranscript|>",
-        *[f"<|{lang}|>" for lang in LANGUAGES.keys()],
-        "<|translate|>",
-        "<|transcribe|>",
-        "<|startoflm|>",
-        "<|startofprev|>",
-        "<|nospeech|>",
-        "<|notimestamps|>",
-        *[f"<|{i * 0.02:.2f}|>" for i in range(1501)],
-    ]
-    special_tokens = dict(zip(specials, itertools.count(n_vocab)))
-    n_vocab += len(specials)
-
-    import tiktoken
-    return tiktoken.Encoding(
-        name=encoding_name,
-        explicit_n_vocab=n_vocab,
-        pat_str=r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""",
-        mergeable_ranks=ranks,
-        special_tokens=special_tokens,
-    )
 
 
 MODEL_URLS = {
