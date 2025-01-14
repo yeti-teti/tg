@@ -13,7 +13,7 @@ HALF = getenv("HALF")
 
 class Attention(nn.Module):
     def __init__(self, dim, n_heads):
-        super().__init()
+        super().__init__()
         self.c_attn = nn.Linear(dim, 3*dim, bias=True)
         self.c_proj = nn.Linear(dim, dim, bias=True)
         self.n_heads = n_heads
@@ -21,18 +21,25 @@ class Attention(nn.Module):
         self.head_dim = dim // n_heads
 
     def forward(self, x:torch.tensor, start_pos:torch.tensor, mask:Optional[torch.tensor]) -> torch.tensor:
-        if mask is not None or start_pos.val == 0:
-            start_pos = start_pos.val
+        if mask is not None or start_pos.item() == 0:
+            start_pos = start_pos.item()
         
         if HALF: x = x.to(torch.float16)
         xqkv = self.c_attn(x)
-        xq, xk, xv = [xqkv[:,:, i*self.dim:(i+1)*self.dim].reshape((None, None, self.n_heads, self.head_dim)) for i in range(3)]
+
+        bsz, seqlen, _ = xqkv.shape
+        xq = xqkv[:, :, :self.dim].reshape(bsz, seqlen, self.num_heads, self.head_dim)
+        xk = xqkv[:, :, self.dim:2*self.dim].reshape(bsz, seqlen, self.n_heads, self.head_dim)
+        xv = xqkv[:, :, 2*self.dim:].reshape(bsz, seqlen, self.n_heads, self.head_dim)
+
+
         bsz, seqlen, _, _ = xq.shape
 
         if not hasattr(self, "cache_kv"):
-           self.cache_kv = torch.zeros((2, bsz, MAX_CONTEXT, self.n_heads, self.head_dim), dtype=torch.dtype).contiguous()
+           self.cache_kv = torch.zeros((2, bsz, MAX_CONTEXT, self.n_heads, self.head_dim), dtype=x.dtype, device=x.device).contiguous()
         
-        xk, xv = self.cache_kv[:, :, start_pos:start_pos+seqlen, :, :]
+        self.cache_kv[0, :, start_pos:start_pos+seqlen, :, :] = xk
+        self.cache_kv[1, :, start_pos:start_pos+seqlen, :, :] = xv
 
         if start_pos > 0:
           keys = self.cache_kv[0][:, 0:start_pos+seqlen, :, :]
@@ -41,7 +48,7 @@ class Attention(nn.Module):
             keys = xk
             values = xv
         
-        xq, keys, values = torch.transpose(xq, (1, 2)), torch.transpose(keys, (1, 2)), values.transpose(values, (1,2))
+        xq, keys, values = xq.transpose(1, 2), keys.transpose(1, 2), values.tranpose(1, 2)
 
         return self.c_proj(F.scaled_dot_product_attention(xq, keys, values, attn_mask=mask).transpose(1,2).reshape(bsz, seqlen, self.dim))
     
@@ -57,7 +64,7 @@ class FeedForward(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(self, dim, n_heads, norm_eps):
-        super.__init__()
+        super().__init__()
         self.attn = Attention(dim, n_heads)
         self.mlp = FeedForward(dim, 4*dim)
         self.ln_1 = nn.LayerNorm(dim, norm_eps)
@@ -75,17 +82,17 @@ class Transformer(nn.Module):
       self.vocab_size = vocab_size
       self.wte =nn.Embedding(vocab_size, dim)
       self.wpe = nn.Embedding(max_seq_len, dim)
-      self.h = [TransformerBlock(dim, n_heads, norm_eps) for _ in range(n_layers)]
+      self.h = nn.ModuleList([TransformerBlock(dim, n_heads, norm_eps) for _ in range(n_layers)])
       self.ln_f = nn.LayerNorm(dim, norm_eps)
-      self.lm_head - nn.Linear(dim, vocab_size, bias=False)
+      self.lm_head = nn.Linear(dim, vocab_size, bias=False)
 
     def forward(self, tokens: torch.tensor, start_pos: torch.tensor, temperature: float=0.0):
       if not hasattr(self, 'allpos'): 
          self.allpos = torch.tensor.arange(0, MAX_CONTEXT).reshape(1, -1)
       
-      if isinstance(tokens, torch.tensor):
+      if isinstance(tokens, torch.Tensor):
         seqlen = 1
-        tok_emb = self.wte.weight[tokens: tokens+1, None]
+        tok_emb = self.wte(tokens.unsqueeze(0))
       else:
         seqlen = tokens.shape[1]
         tok_emb = self.wte(tokens)
@@ -112,8 +119,10 @@ class Transformer(nn.Module):
       if temperature < 1e-6:
         ret = logits.argmax(-1)
       else:
-        ret = torch.multinomial(nn.Softmax((logits / temperature)))
-      return torch.flatten(ret)
+        probs = F.Softmax((logits / temperature), dim=-1)
+        ret = torch.multinomial(probs, num_samples=1)
+        ret = ret.squeeze(-1)
+      return ret
     
 VOCAB_SIZE = 50257
 MODEL_PARAMS = {
@@ -140,7 +149,7 @@ class GPT2:
         weights[k] = weights[k].T
     
     weights['lm_head.weight'] = weights['wte.weight']
-    model.load_state_dict(model, weights)
+    model.load_state_dict(weights)
 
     if HALF:
       for l in model.state_dict().values():
@@ -158,7 +167,7 @@ class GPT2:
     start_pos = 0
       
     if batch_size == 1 and len(toks[0][start_pos:]) == 1:
-      tokens = torch.tensor("tokens", 0, VOCAB_SIZE).bind(toks[0][start_pos])
+      tokens = torch.tensor([x[start_pos:] for x in toks], dtype=torch.long)
     else:
       tokens = torch.tensor([x[start_pos:] for x in toks])
     tok = self.model(tokens, torch.tensor("start_pos", 1 if start_pos else 0, MAX_CONTEXT).bind(start_pos), temperature).tolist()
