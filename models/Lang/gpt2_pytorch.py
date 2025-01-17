@@ -28,7 +28,7 @@ class Attention(nn.Module):
         xqkv = self.c_attn(x)
 
         bsz, seqlen, _ = xqkv.shape
-        xq = xqkv[:, :, :self.dim].reshape(bsz, seqlen, self.num_heads, self.head_dim)
+        xq = xqkv[:, :, :self.dim].reshape(bsz, seqlen, self.n_heads, self.head_dim)
         xk = xqkv[:, :, self.dim:2*self.dim].reshape(bsz, seqlen, self.n_heads, self.head_dim)
         xv = xqkv[:, :, 2*self.dim:].reshape(bsz, seqlen, self.n_heads, self.head_dim)
 
@@ -48,7 +48,7 @@ class Attention(nn.Module):
             keys = xk
             values = xv
         
-        xq, keys, values = xq.transpose(1, 2), keys.transpose(1, 2), values.tranpose(1, 2)
+        xq, keys, values = xq.transpose(1, 2), keys.transpose(1, 2), values.transpose(1, 2)
 
         return self.c_proj(F.scaled_dot_product_attention(xq, keys, values, attn_mask=mask).transpose(1,2).reshape(bsz, seqlen, self.dim))
     
@@ -90,12 +90,12 @@ class Transformer(nn.Module):
       if not hasattr(self, 'allpos'): 
          self.allpos = torch.tensor.arange(0, MAX_CONTEXT).reshape(1, -1)
       
-      if isinstance(tokens, torch.Tensor):
-        seqlen = 1
-        tok_emb = self.wte(tokens.unsqueeze(0))
-      else:
+      if tokens.dim() == 2:
         seqlen = tokens.shape[1]
         tok_emb = self.wte(tokens)
+      elif tokens.dim() == 1:
+         seqlen = 1
+         tok_emb = self.wte(tokens.unsqueeze(0))
 
       pos_emb = self.wpe(self.allpos[:, start_pos:start_pos+seqlen])
       h = tok_emb + pos_emb
@@ -103,7 +103,17 @@ class Transformer(nn.Module):
       if HALF: 
         h = h.to(torch.float16)
 
-      mask = torch.full((1, 1, seqlen, start_pos.val+seqlen), float("-inf"), dtype=torch.dtype).triu(start_pos.val+1) if seqlen > 1 else None
+
+      if seqlen > 1:
+          start_pos_val = start_pos.item()
+          mask = torch.full((1, 1, seqlen, start_pos_val + seqlen),
+                            float('-inf'),
+                            dtype=torch.float32,
+                            device=tokens.device)
+          mask = mask.triu(start_pos_val + 1)
+      else:
+          mask = None
+
 
       for hi in self.h: 
          h = hi(h, start_pos, mask)
@@ -165,14 +175,15 @@ class GPT2:
     prompt_tokens = self.tokenizer.encode(prompt, allowed_special={"<|endoftext|>"})
     toks = [prompt_tokens[:] for _ in range(batch_size)]
     start_pos = 0
-      
-    if batch_size == 1 and len(toks[0][start_pos:]) == 1:
-      tokens = torch.tensor([x[start_pos:] for x in toks], dtype=torch.long)
-    else:
-      tokens = torch.tensor([x[start_pos:] for x in toks])
-    tok = self.model(tokens, torch.tensor("start_pos", 1 if start_pos else 0, MAX_CONTEXT).bind(start_pos), temperature).tolist()
-    start_pos = len(toks[0])
-    for i,t in enumerate(tok): toks[i].append(t)
+    
+    for _ in range(max_length):
+      if batch_size == 1 and len(toks[0][start_pos:]) == 1:
+        tokens = torch.tensor([x[start_pos:] for x in toks], dtype=torch.long)
+      else:
+        tokens = torch.tensor([x[start_pos:] for x in toks])
+      tok = self.model(tokens, torch.tensor(start_pos), temperature).tolist()
+      start_pos = len(toks[0])
+      for i,t in enumerate(tok): toks[i].append(t)
     return [self.tokenizer.decode(x) for x in toks]
 
 
